@@ -61,6 +61,8 @@ import java.util.Map;
  * - Set the saved URL, used on every later launch: adb shell am start -n com.wesbos.homehq/.MainActivity --es url <url>
  * - A site bundled at build time (KIOSK_SITE) is answered at http://127.0.0.1:8765/ from the
  *   APK's assets/site/, with no server; every other URL goes to the network as usual.
+ * - Night schedule (backlight off, a touch wakes it for a minute), see NightMode:
+ *     adb shell am start -n com.wesbos.homehq/.MainActivity --ei night_from 22 --ei night_to 7
  * - Offer the kiosk as a Home app (--ez home false undoes it), then pick it:
  *     adb shell am start -n com.wesbos.homehq/.MainActivity --ez home true
  *     adb shell cmd package set-home-activity com.wesbos.homehq/.Home
@@ -97,6 +99,7 @@ public class MainActivity extends Activity {
   static final long TIME_NUDGE_MS = 60 * 1000;
 
   private WebView web;
+  private NightMode night;
   private Button menuButton;
   private Thread bootanimThread;
   private final Handler handler = new Handler(Looper.getMainLooper());
@@ -191,6 +194,8 @@ public class MainActivity extends Activity {
     applyBootanimFlag(getIntent());
     applyBootFlag(getIntent());
     keepNavigationEnabled();
+    night = new NightMode(this, getSharedPreferences(PREFS, MODE_PRIVATE));
+    night.apply(getIntent());
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         | WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
@@ -340,6 +345,7 @@ public class MainActivity extends Activity {
     web.resumeTimers();
     web.onResume();
     NavigationService.setDashboardVisible(true);
+    night.start();
     if (portalMode) {
       handler.removeCallbacks(portalCheck);
       handler.post(portalCheck);
@@ -355,6 +361,7 @@ public class MainActivity extends Activity {
   protected void onPause() {
     resumed = false;
     cancelExit();
+    night.stop();
     // pauseTimers affects every WebView in this app process. Native retries need pausing too.
     web.onPause();
     web.pauseTimers();
@@ -374,6 +381,7 @@ public class MainActivity extends Activity {
     applyBootFlag(intent);
     applyMenuButtonFlag(intent);
     applyBootanimFlag(intent);
+    night.apply(intent);
     String url = urlFrom(intent);
     if (url != null) {
       closePortal();
@@ -919,6 +927,7 @@ public class MainActivity extends Activity {
   /** Watches for the two-finger exit hold; all touches still go to the page (after a stale-touch reset). */
   @Override
   public boolean dispatchTouchEvent(MotionEvent e) {
+    night.onTouch(e);
     switch (e.getActionMasked()) {
       case MotionEvent.ACTION_DOWN:
         // Android sends DOWN only when every earlier finger has lifted. If the page still holds a
