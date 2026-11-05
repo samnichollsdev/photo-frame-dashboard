@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "home-frame-dashboard",
+      "name": "photo-frame-dashboard",
       "dependencies": {
         "ical.js": "^2.2.1",
       },

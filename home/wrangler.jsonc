@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "home-frame-dashboard",
+  "name": "photo-frame-dashboard",
   "main": "worker/index.js",
   "compatibility_date": "2026-09-30",
   "workers_dev": true,
