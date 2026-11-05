@@ -12,11 +12,11 @@
     <section class="card left">
       <div class="clock" id="clock">--:--</div>
       <div class="date" id="date"></div>
+      <div class="now" id="weather-now"></div>
+      <div class="hint" id="weather-hint"></div>
       <div class="spacer"></div>
       <div class="hours" id="weather-hours"></div>
       <div class="stats" id="weather-stats"></div>
-      <div class="now" id="weather-now"></div>
-      <div class="hint" id="weather-hint"></div>
       <div class="minis">
         <div class="mini-days" id="weather-days"></div>
         <div class="bin" id="bin"></div>
@@ -25,12 +25,16 @@
 
     <section class="card middle" id="calendar" data-fs-open="cal"></section>
 
-    <section class="teams" id="teams"></section>
+    <div class="right">
+      <section class="teams" id="teams"></section>
+      <section class="card soon" id="soon"></section>
+    </div>
 
     <section class="player" id="player" hidden></section>
   </main>
   <section class="np" id="np" hidden></section>
   <section class="fs" id="fs" hidden></section>
+  <div class="dim" id="dim"></div>
   <div class="night" id="night"></div>
   <script type="module" src="/src/main.js"></script>
 </body>

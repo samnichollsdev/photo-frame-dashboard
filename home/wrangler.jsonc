@@ -13,5 +13,5 @@
     "run_worker_first": true
   },
   // Holds the Spotify refresh token. `wrangler dev` uses a local copy in .wrangler/state (ignored).
-  "kv_namespaces": [{ "binding": "STORE", "id": "c71483122f7748b79ea1778223159b82" }]
+  "kv_namespaces": [{ "binding": "STORE", "id": "7daab17384454fbe812b527d73e39df1" }]
 }

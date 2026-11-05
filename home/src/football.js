@@ -60,15 +60,15 @@ async function fixtures(team) {
   const key = `fixtures:${team.id}`;
   const saved = unstash(key);
   const over = saved && saved.value.next && Date.now() > Date.parse(saved.value.next.kickoff) + 150 * 60e3;
-  if (saved && !over && Date.now() - saved.at < 2 * 3600e3) return saved.value;
+  if (saved && !over && Date.now() - saved.at < 2 * 3600e3) return { ...saved.value, fetchedAt: saved.at };
   try {
     const n = await getJSON(`${TSDB}/eventsnext.php?id=${team.id}`);
     const l = await getJSON(`${TSDB}/eventslast.php?id=${team.id}`);
     const value = { next: fixtureView((n.events || [])[0]), last: fixtureView((l.results || [])[0]) };
     stash(key, value);
-    return value;
+    return { ...value, fetchedAt: Date.now() };
   } catch (err) {
-    if (saved) return saved.value;
+    if (saved) return { ...saved.value, fetchedAt: saved.at };
     throw err;
   }
 }
@@ -100,7 +100,8 @@ export async function espnLive(team, f) {
 // Same shape as the server's /api/football, so the cards render either.
 export async function loadFootball() {
   const teams = await Promise.all(TEAMS.map(async (team) => {
-    let { next, last } = await fixtures(team);
+    const base = await fixtures(team);
+    let { next, last } = base;
     if (next) {
       const ko = Date.parse(next.kickoff);
       if (Date.now() > ko - 10 * 60e3 && Date.now() < ko + 150 * 60e3) {
@@ -109,7 +110,7 @@ export async function loadFootball() {
         else if (Date.now() > ko) next = { ...next, status: 'live', statusShort: 'LIVE', elapsed: null, noScore: true };
       }
     }
-    return { key: team.key, name: team.name, id: team.id, next, last };
+    return { key: team.key, name: team.name, id: team.id, next, last, fetchedAt: base.fetchedAt };
   }));
   return { configured: true, updated: Date.now(), teams };
 }

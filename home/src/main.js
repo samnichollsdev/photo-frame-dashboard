@@ -1,5 +1,6 @@
-import { BINS, NIGHT, TEAM_STYLE } from './config.js';
-import { binIcon, feelsIcon, playIcons, sunriseIcon, sunsetIcon, umbrellaIcon, weatherIcon, windIcon } from './icons.js';
+import { BINS, DIM, EVENING_FROM, NIGHT, PEOPLE, TEAM_STYLE } from './config.js';
+import { binIcon, playIcons, umbrellaIcon, weatherIcon } from './icons.js';
+import { nextBin } from './bins.js';
 import { espnIdFor, loadFootball, loadTables } from './football.js';
 
 const $ = (id) => document.getElementById(id);
@@ -9,6 +10,17 @@ const hhmm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const dateKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+
+// A note for data older than maxAgeMs, so an old copy can't pass for today's. Empty when fresh.
+function staleNote(what, updated, maxAgeMs) {
+  if (updated && Date.now() - updated < maxAgeMs) return '';
+  if (!updated) return `<p class="stale">${what} may be out of date</p>`;
+  const min = Math.round((Date.now() - updated) / 60e3);
+  const h = Math.round(min / 60);
+  const d = Math.round(h / 24);
+  const age = h < 1 ? `${min} min` : h < 48 ? `${h} hour${h === 1 ? '' : 's'}` : `${d} days`;
+  return `<p class="stale">${what} updated ${age} ago</p>`;
+}
 
 // Fetch JSON from our own server. Failures keep the last good data and retry with backoff, since
 // Wi-Fi is often not up for the first minute after the frame boots.
@@ -49,6 +61,7 @@ function tick() {
     updateNight(now);
     renderBins(now);
     renderCalendar();
+    renderSoon();
     // Reload once a day at 03:00 to clear any slow leaks.
     if (m === '03:00' && performance.now() > 120e3) location.reload();
   }
@@ -66,6 +79,10 @@ function isNight(now) {
 }
 function updateNight(now) {
   $('night').className = isNight(now) && Date.now() > awakeUntil ? 'night on' : 'night';
+  // Evening dim: ramps up towards night, and is off the rest of the time.
+  const hour = now.getHours() + now.getMinutes() / 60;
+  const ramp = hour >= DIM.from && hour < DIM.to ? (hour - DIM.from) / (DIM.to - DIM.from) : 0;
+  $('dim').style.opacity = String(ramp * DIM.level);
 }
 // pointerdown covers both the frame's touchscreen and a mouse in a desktop browser.
 document.addEventListener('pointerdown', () => {
@@ -89,6 +106,7 @@ poll('/api/weather', 15 * 60e3, (w) => {
   $('weather-hint').innerHTML = w.rainFrom
     ? `${umbrellaIcon} Rain from ${esc(w.rainFrom)}, take a coat`
     : (w.now.temp <= 3 ? 'Cold out, wrap up' : '');
+  $('weather-hint').innerHTML += staleNote('Weather', w.updated, 3600e3);
   $('weather-days').innerHTML = w.days.slice(0, 2).map((d) => {
     const i = weatherIcon(d.code, true);
     const day = DAY[new Date(`${d.date}T12:00:00`).getDay()];
@@ -101,33 +119,25 @@ poll('/api/weather', 15 * 60e3, (w) => {
     return `<div class="hr"><span class="muted">${h.time}</span><span class="wx ${i.tone}">${i.svg}</span><span>${h.temp}°</span><span class="pop">${rain}</span></div>`;
   }).join('');
   $('weather-stats').innerHTML = w.now.feels == null ? '' : [
-    stat(feelsIcon, 'Feels like', `${w.now.feels}°`),
-    stat(windIcon, `Wind ${compass(w.now.windFrom)}`, `${w.now.wind} <small>mph</small>`),
-    w.sun ? stat(w.sun.kind === 'rise' ? sunriseIcon : sunsetIcon, w.sun.kind === 'rise' ? 'Sunrise' : 'Sunset', w.sun.time) : '',
+    stat('Feels like', `${w.now.feels}°`),
+    stat(`Wind ${compass(w.now.windFrom)}`, `${w.now.wind} <small>mph</small>`),
+    w.sun ? stat(w.sun.kind === 'rise' ? 'Sunrise' : 'Sunset', w.sun.time) : '',
   ].join('');
 });
 
-const stat = (icon, label, value) => `<div class="stat"><span class="muted">${icon} ${label}</span><b>${value}</b></div>`;
+const stat = (label, value) => `<div class="stat"><span class="muted">${label}</span><b>${value}</b></div>`;
 const compass = (deg) => ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(deg / 45) % 8];
 
 // ---------- Bins ----------
 
 function renderBins(now) {
-  const known = new Date(`${BINS.knownDate}T00:00:00`);
-  const today = addDays(now, 0);
-  // Next collection on the same weekday as knownDate, today included until collectedByHour.
-  let next = addDays(today, (known.getDay() - today.getDay() + 7) % 7);
-  if (+next === +today && now.getHours() >= BINS.collectedByHour) next = addDays(next, 7);
-  const weeks = Math.round((next - known) / (7 * 864e5));
-  const other = BINS.knownBin === 'green' ? 'black' : 'green';
-  const bin = Math.abs(weeks) % 2 === 0 ? BINS.knownBin : other;
+  const { bin, date, days, urgent } = nextBin(now, BINS);
+  let when = days < 7 ? DAY[date.getDay()] : koFmt.format(date);
+  if (days === 0) when = 'Out now';
+  else if (urgent) when = 'Out tonight';
+  else if (days === 1) when = 'Tomorrow';
 
-  let when = DAY[next.getDay()];
-  let urgent = false;
-  if (+next === +today) { when = 'Out now'; urgent = true; }
-  else if (+next === +addDays(today, 1) && now.getHours() >= BINS.outFromHour) { when = 'Out tonight'; urgent = true; }
-  else if (+next === +addDays(today, 1)) when = 'Tomorrow';
-
+  // Quiet until it needs doing; the full colour is saved for the night before and the morning.
   $('bin').className = `bin ${bin}${urgent ? ' urgent' : ''}`;
   $('bin').innerHTML = `${binIcon}<b>${bin === 'green' ? 'Green' : 'Black'}</b><span>${when}</span>`;
 }
@@ -164,12 +174,21 @@ function timeLabel(e, day) {
   return +end < +addDays(day, 1) ? `Until ${hhmm(end)}` : 'All day';
 }
 
+const PEOPLE_MATCH = PEOPLE.map((p) => ({ ...p, re: new RegExp(`\\b${p.name}\\b`, 'i') }));
+function colourOf(e) {
+  const person = PEOPLE_MATCH.find((p) => p.re.test(e.title));
+  return person ? person.colour : e.colour || '#B4B2A9';
+}
+
 function eventRow(e, now, isToday, day) {
   const s = new Date(e.start);
   const past = isToday && !e.allDay && Date.parse(e.end) < +now;
-  const soon = isToday && !e.allDay && +s > +now ? ` · ${relative(+s - +now)}` : '';
+  const soon = isToday && !e.allDay && +s > +now ? relative(+s - +now) : '';
+  // The calendar's name only tells you something when there's more than one.
+  const several = new Set(calData.events.map((x) => x.calendar)).size > 1;
+  const small = [several ? e.calendar : '', soon].filter(Boolean).join(' · ');
   return `<div class="ev${past ? ' past' : ''}"><span class="t">${timeLabel(e, day)}</span>` +
-    `<span class="b" style="border-color:${esc(e.colour || '#B4B2A9')}">${esc(e.title)}<small>${esc(e.calendar)}${soon}</small></span></div>`;
+    `<span class="b" style="border-color:${esc(colourOf(e))}">${esc(e.title)}${small ? `<small>${esc(small)}</small>` : ''}</span></div>`;
 }
 
 const dayFmt = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'short' });
@@ -188,20 +207,30 @@ function monthWeeks(first) {
   return weeks;
 }
 
-// Small month overview at the top of the column: a dot per calendar with something on that day.
-function miniMonth(today) {
-  const first = new Date(today.getFullYear(), today.getMonth(), 1);
-  let html = `<div class="mini-month"><div class="mm-title">${monthFmt.format(first)}</div><div class="mm-grid">`;
+// Two-week strip at the top of the column, this week first: a dot per person with something on.
+// Tapping the column opens the full month.
+function twoWeeks(today) {
+  const legend = PEOPLE.map((p) => `<span><b style="background:${esc(p.colour)}"></b>${esc(p.name)}</span>`).join('');
+  let html = `<div class="mini-month"><div class="mm-title"><span>${monthFmt.format(today)}</span><span class="mm-key">${legend}</span></div><div class="mm-grid">`;
   html += ['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d) => `<span class="mm-dow">${d}</span>`).join('');
-  for (const week of monthWeeks(first)) {
-    for (const d of week) {
-      if (d.getMonth() !== first.getMonth()) { html += '<span class="mm-day out"></span>'; continue; }
-      const colours = [...new Set(eventsOn(d).map((e) => e.colour || '#B4B2A9'))].slice(0, 3);
-      const cls = +d === +today ? ' today' : +d < +today ? ' past' : '';
-      html += `<span class="mm-day${cls}">${d.getDate()}<i>${colours.map((c) => `<b style="background:${esc(c)}"></b>`).join('')}</i></span>`;
-    }
+  const start = mondayOnOrBefore(today);
+  for (let i = 0; i < 14; i++) {
+    const d = addDays(start, i);
+    const colours = [...new Set(eventsOn(d).map(colourOf))].slice(0, 3);
+    const cls = +d === +today ? ' today' : +d < +today ? ' past' : '';
+    html += `<span class="mm-day${cls}">${d.getDate()}<i>${colours.map((c) => `<b style="background:${esc(c)}"></b>`).join('')}</i></span>`;
   }
   return `${html}</div></div>`;
+}
+
+// Drop the furthest-away days until the column fits, however much is on.
+function fitCalendar(el) {
+  let guard = 8;
+  while (el.scrollHeight > el.clientHeight + 1 && guard-- > 0) {
+    const later = el.querySelectorAll('.later');
+    if (!later.length) break;
+    later[later.length - 1].remove();
+  }
 }
 
 function renderCalendar() {
@@ -216,32 +245,105 @@ function renderCalendar() {
   }
   const now = new Date();
   const today = addDays(now, 0);
-  let html = miniMonth(today);
-  const todays = eventsOn(today);
-  html += '<p class="label">Today</p>';
-  let lineDone = false;
-  for (const e of todays) {
-    if (!lineDone && !e.allDay && Date.parse(e.start) > +now) {
-      html += '<div class="nowline"><span>Now</span><i></i></div>';
-      lineDone = true;
+  let html = twoWeeks(today);
+  // In the evening today's finished and all-day events drop away; with nothing left, the column
+  // simply starts at tomorrow.
+  const evening = now.getHours() >= EVENING_FROM;
+  const todays = eventsOn(today).filter((e) => !evening || (!e.allDay && Date.parse(e.end) > +now));
+  if (todays.length) {
+    html += '<p class="label">Today</p>';
+    let lineDone = false;
+    for (const e of todays) {
+      if (!lineDone && !e.allDay && Date.parse(e.start) > +now) {
+        html += '<div class="nowline"><span>Now</span><i></i></div>';
+        lineDone = true;
+      }
+      html += eventRow(e, now, true, today);
     }
-    html += eventRow(e, now, true, today);
+    if (!lineDone) html += '<div class="nowline"><span>Now</span><i></i></div>';
+  } else if (!evening) {
+    html += '<p class="label">Today · nothing on</p>';
   }
-  if (!todays.length) html += '<p class="muted">Nothing on</p>';
-  else if (!lineDone) html += '<div class="nowline"><span>Now</span><i></i></div>';
   const tomorrow = eventsOn(addDays(today, 1));
-  html += '<p class="label gap">Tomorrow</p>';
-  html += tomorrow.length ? tomorrow.map((e) => eventRow(e, now, false, addDays(today, 1))).join('') : '<p class="muted">Nothing on</p>';
-  // The three days after that, in a smaller style; days with nothing on are left out.
-  for (let i = 2; i < 5; i++) {
+  const gap = todays.length || !evening ? ' gap' : '';
+  html += tomorrow.length
+    ? `<p class="label${gap}">Tomorrow</p>${tomorrow.map((e) => eventRow(e, now, false, addDays(today, 1))).join('')}`
+    : `<p class="label${gap}">Tomorrow · nothing on</p>`;
+  // The days after that, in a smaller style; fitCalendar keeps as many as there's room for.
+  for (let i = 2; i < 8; i++) {
     const day = addDays(today, i);
     const evs = eventsOn(day);
     if (!evs.length) continue;
     html += `<div class="later"><p class="label gap">${dayFmt.format(day)}</p>${evs.map((e) => eventRow(e, now, false, day)).join('')}</div>`;
   }
-  if (calError) html += '<p class="stale">Not updated recently</p>';
+  html += staleNote('Calendar', calData.updated, 3600e3);
   el.innerHTML = html;
+  fitCalendar(el);
   if (fsOpen === 'cal') renderMonthView();
+}
+
+// ---------- Coming up: birthdays and countdowns ----------
+
+let birthdayData = null;
+poll('/api/birthdays', 3600e3, (b) => { birthdayData = b; renderSoon(); });
+
+const shortDate = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' });
+const daysAway = (n) => (n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : `${n} days`);
+
+function nextBirthdays(today) {
+  return (birthdayData.birthdays || []).map((b) => {
+    let year = today.getFullYear();
+    let date = new Date(year, b.month - 1, b.day);
+    if (+date < +today) { year += 1; date = new Date(year, b.month - 1, b.day); }
+    return { ...b, date, days: Math.round((date - today) / 864e5), turns: b.age == null ? null : b.age + year - b.ageYear };
+  }).sort((a, b) => a.days - b.days);
+}
+
+// The next few multi-day events (annual leave, trips) still to start, three days or longer.
+function nextCountdowns(today) {
+  const out = [];
+  if (!calData || !calData.configured) return out;
+  const same = (e) => (x) => x.allDay && x.title === e.title;
+  for (let i = 1; i < 60 && out.length < 2; i++) {
+    const day = addDays(today, i);
+    for (const e of eventsOn(day)) {
+      if (!e.allDay || out.some((o) => o.title === e.title)) continue;
+      if (eventsOn(addDays(day, -1)).some(same(e))) continue;
+      let length = 1;
+      while (length < 3 && eventsOn(addDays(day, length)).some(same(e))) length++;
+      if (length >= 3) out.push({ title: e.title, colour: colourOf(e), date: day, days: i });
+    }
+  }
+  return out.slice(0, 2);
+}
+
+function renderSoon() {
+  const el = $('soon');
+  if (!birthdayData) return;
+  const today = addDays(new Date(), 0);
+  let html = '<p class="label">Birthdays</p>';
+  if (!birthdayData.configured) {
+    html += '<p class="muted">Add your calendar link to show birthdays</p>';
+  } else {
+    const list = nextBirthdays(today);
+    if (!list.length) html += '<p class="muted">None found in your calendar</p>';
+    html += list.slice(0, 6).map((b) => `<div class="bd${b.days === 0 ? ' now' : b.days <= 7 ? ' near' : ''}"><span class="bd-date">${shortDate.format(b.date)}</span><span class="bd-name">${esc(b.name)}${b.turns ? `<small> turns ${b.turns}</small>` : ''}</span><span class="bd-when">${daysAway(b.days)}</span></div>`).join('');
+  }
+  const counts = nextCountdowns(today);
+  if (counts.length) {
+    html += '<div class="counts"><p class="label gap">Counting down</p>';
+    html += counts.map((c) => `<div class="bd"><span class="bd-date">${shortDate.format(c.date)}</span><span class="bd-name" style="color:${esc(c.colour)}">${esc(c.title)}</span><span class="bd-when">${daysAway(c.days)}</span></div>`).join('');
+    html += '</div>';
+  }
+  html += staleNote('Birthdays', birthdayData.updated, 48 * 3600e3);
+  el.innerHTML = html;
+  // Keep the soonest birthdays and the countdowns; trim the rest to fit whatever room is left.
+  let guard = 6;
+  while (el.scrollHeight > el.clientHeight + 1 && guard-- > 0) {
+    const rows = el.querySelectorAll('.bd:not(.counts .bd)');
+    if (rows.length < 2) break;
+    rows[rows.length - 1].remove();
+  }
 }
 
 // ---------- Full-screen views: month calendar and league table ----------
@@ -271,6 +373,28 @@ function renderFs() {
   else if (fsOpen && fsOpen.startsWith('table:')) renderTableView(fsOpen.slice(6));
 }
 
+// An all-day event that carries on from or into the next day is drawn as one bar across the week.
+// Repeated single-day events with the same title join up too. Null for anything else.
+function spanOn(e, d) {
+  if (!e.allDay) return null;
+  const same = (x) => x.allDay && x.title === e.title;
+  const before = eventsOn(addDays(d, -1)).some(same);
+  const after = eventsOn(addDays(d, 1)).some(same);
+  if (!before && !after) return null;
+  const monday = d.getDay() === 1;
+  const sunday = d.getDay() === 0;
+  let cells = 1; // this bar's length within the week, for the width of its title
+  for (let next = addDays(d, 1); next.getDay() !== 1 && eventsOn(next).some(same); next = addDays(next, 1)) cells++;
+  return { joinLeft: before && !monday, joinRight: after && !sunday, title: !before || monday, cells };
+}
+
+function spanBar(e, span) {
+  const n = parseInt(colourOf(e).slice(1), 16);
+  const tint = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},0.3)`;
+  const cls = `${span.joinLeft ? ' join-l' : ''}${span.joinRight ? ' join-r' : ''}`;
+  return `<span class="mv-bar${cls}" style="background:${tint}">${span.title ? `<b style="width:${span.cells * 100}%">${esc(e.title)}</b>` : '&nbsp;'}</span>`;
+}
+
 function renderMonthView() {
   if (!calData || !calData.configured) { $('fs').innerHTML = '<button class="fs-close" data-fs-close aria-label="Close">×</button><p class="muted">No calendar yet</p>'; return; }
   const today = addDays(new Date(), 0);
@@ -284,10 +408,12 @@ function renderMonthView() {
   for (const week of monthWeeks(first)) {
     for (const d of week) {
       const out = d.getMonth() !== first.getMonth();
-      const evs = out ? [] : eventsOn(d);
+      const evs = out ? [] : eventsOn(d).map((e) => ({ e, span: spanOn(e, d) }));
+      evs.sort((a, b) => (b.span ? 1 : 0) - (a.span ? 1 : 0)); // bars first, so they line up across days
       const cls = `${out ? ' out' : ''}${+d === +today ? ' today' : ''}${!out && +d < +today ? ' past' : ''}`;
       html += `<div class="mv-day${cls}"><span class="mv-num">${out ? '' : d.getDate()}</span>`;
-      html += evs.slice(0, 3).map((e) => `<span class="mv-ev" style="border-color:${esc(e.colour || '#B4B2A9')}">${e.allDay || +new Date(e.start) < +d ? '' : `<em>${hhmm(new Date(e.start))}</em> `}${esc(e.title)}</span>`).join('');
+      html += evs.slice(0, 3).map(({ e, span }) => (span ? spanBar(e, span)
+        : `<span class="mv-ev" style="border-color:${esc(colourOf(e))}">${e.allDay || +new Date(e.start) < +d ? '' : `<em>${hhmm(new Date(e.start))}</em> `}${esc(e.title)}</span>`)).join('');
       if (evs.length > 3) html += `<span class="mv-more">+${evs.length - 3} more</span>`;
       html += '</div>';
     }
@@ -375,23 +501,48 @@ function fitSnippets() {
   }
 }
 
+const ordinal = (n) => {
+  const tens = n % 100;
+  const s = tens >= 11 && tens <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th';
+  return `${n}${s}`;
+};
+
+// One line for the quiet card, e.g. "5th in Premier League · 15 pts". The full table is a tap away.
+function standing(t) {
+  const table = tables && tables[t.key];
+  const row = table && table.rows.find((r) => r.id === espnIdFor(t.key));
+  return row ? `<div class="sub">${ordinal(row.rank)} in ${esc(table.league)} · ${row.pts} pts</div>` : '';
+}
+
+// Big on match day: from the morning of the game until the evening after it.
+function isMatchDay(p) {
+  if (!p) return false;
+  if (p.kind === 'next') return +addDays(new Date(p.f.kickoff), 0) === +addDays(new Date(), 0);
+  return p.kind === 'live' || Date.now() - Date.parse(p.f.kickoff) < 14 * 3600e3;
+}
+
 function teamCard(t) {
   const st = TEAM_STYLE[t.key] || { short: t.name.slice(0, 3).toUpperCase(), style: 'solid' };
   const p = pickFixture(t);
-  const stripe = st.style === 'halves' ? '<div class="stripe"><i></i><i></i></div>' : '';
-  const cls = `team kit-${st.style}${p && p.kind === 'live' ? ' live' : ''}" data-fs-open="table:${t.key}`;
-  if (!p) return `<div class="${cls}">${stripe}<div class="pad"><p class="label">${esc(t.name)}</p><p class="muted">No fixtures found</p></div>${tableSnippet(t.key)}</div>`;
+  const big = isMatchDay(p);
+  const stripe = st.style === 'halves' ? '<div class="stripe"><i></i><i></i></div>' : big ? '' : '<div class="stripe"><i></i></div>';
+  const cls = `team ${big ? `big kit-${st.style}` : 'quiet'}${p && p.kind === 'live' ? ' live' : ''}" data-fs-open="table:${t.key}`;
+  const stale = staleNote('Fixtures', t.fetchedAt, 6 * 3600e3);
+  const below = big ? tableSnippet(t.key) : '';
+  if (!p) return `<div class="${cls}">${stripe}<div class="pad"><div class="row">${crest(null, st.short)}<span>${esc(t.name)}</span></div><p class="sub">No fixtures found</p>${standing(t)}${stale}</div></div>`;
   const f = p.f;
   if (p.kind === 'next') {
     const home = f.home.id === t.id;
     const opp = home ? f.away : f.home;
+    // League games are covered by the table line; say so when it's a cup.
+    const cup = /premier league|national league/i.test(f.league || '') ? '' : ` · ${esc(f.league)}`;
     return `<div class="${cls}">${stripe}<div class="pad">
-      <p class="label">${esc(f.league)}</p>
       <div class="row">${crest(home ? f.home : f.away, st.short)}<span>${esc(t.name)}</span></div>
-      <div class="sub">v ${esc(opp.name)} (${home ? 'home' : 'away'})</div>
       <div class="ko">${kickoffText(f.kickoff)}</div>
-      ${t.last && t.last.status === 'done' ? `<div class="sub">Last: ${resultLetter(t, t.last)} ${t.last.home.goals}–${t.last.away.goals} v ${esc(t.last.home.id === t.id ? t.last.away.name : t.last.home.name)}</div>` : ''}
-    </div>${tableSnippet(t.key)}</div>`;
+      <div class="sub line">v ${esc(opp.name)} (${home ? 'home' : 'away'})${cup}</div>
+      ${t.last && t.last.status === 'done' ? `<div class="sub line">Last: ${resultLetter(t, t.last)} ${t.last.home.goals}–${t.last.away.goals} v ${esc(t.last.home.id === t.id ? t.last.away.name : t.last.home.name)}</div>` : ''}
+      ${big ? '' : standing(t)}${stale}
+    </div>${below}</div>`;
   }
   const badge = p.kind === 'live'
     ? `<span class="badge">${f.statusShort === 'HT' ? 'Half time' : f.elapsed ? `Live ${f.elapsed}'` : 'In progress'}</span>`
@@ -401,8 +552,8 @@ function teamCard(t) {
     <div class="head"><p class="label">${esc(f.league)}</p>${badge}</div>
     <div class="row score">${crest(f.home, f.home.id === t.id ? st.short : '')}<span>${esc(f.home.name)}</span><b>${f.home.goals == null ? '' : f.home.goals}</b></div>
     <div class="row score">${crest(f.away, f.away.id === t.id ? st.short : '')}<span>${esc(f.away.name)}</span><b>${f.away.goals == null ? '' : f.away.goals}</b></div>
-    ${progress}
-  </div>${tableSnippet(t.key)}</div>`;
+    ${progress}${big ? '' : standing(t)}${stale}
+  </div>${below}</div>`;
 }
 
 function renderFootball(d, err) {
@@ -410,6 +561,7 @@ function renderFootball(d, err) {
   if (!d) { el.innerHTML = `<div class="team kit-solid"><div class="pad"><p class="label">Football</p><p class="sub">${err ? 'Unavailable, retrying' : 'Loading…'}</p></div></div>`; return; }
   el.innerHTML = d.teams.map(teamCard).join('');
   fitSnippets();
+  renderSoon(); // the cards' size changes the room it has
 }
 
 // Fetched on the frame (see football.js); the server's cached copy is the fallback.

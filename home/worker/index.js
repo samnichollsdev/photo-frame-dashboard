@@ -1,6 +1,7 @@
 // Serves the built dashboard from ./dist and a small JSON API for it. The frame only ever talks to
 // this server: third-party HTTPS fails on Android 6, and keys must not reach the page.
 import ICAL from 'ical.js';
+import { findBirthdays } from './birthdays.js';
 import { LOCATION, TEAMS, TIMEZONE } from './config.js';
 import { art, spotify } from './spotify.js';
 
@@ -74,6 +75,7 @@ export default {
         case '/api/weather': return json(await weather());
         case '/api/football': return json(await football(env));
         case '/api/calendar': return json(await calendar(env));
+        case '/api/birthdays': return json(await birthdays(env));
         case '/api/art': return art(url);
         case '/api/logo': return logo(url);
       }
@@ -198,7 +200,7 @@ async function football(env) {
     const base = await cached(`fixtures:${team.id}`, 2 * 3600e3, async () => {
       const n = await sportsDb(env, `eventsnext.php?id=${team.id}`);
       const l = await sportsDb(env, `eventslast.php?id=${team.id}`);
-      return { next: fixtureView((n.events || [])[0]), last: fixtureView((l.results || [])[0]) };
+      return { next: fixtureView((n.events || [])[0]), last: fixtureView((l.results || [])[0]), fetchedAt: Date.now() };
     });
     let { next, last } = base;
     // From 10 minutes before kick-off to 2.5 hours after, check that fixture every 2 minutes.
@@ -214,7 +216,7 @@ async function football(env) {
       // After the match window, fetch next/last again so the result replaces the fixture.
       if (Date.now() >= ko + 150 * 60e3) await expire(`fixtures:${team.id}`);
     }
-    return { key: team.key, name: team.name, id: String(team.id), next, last };
+    return { key: team.key, name: team.name, id: String(team.id), next, last, fetchedAt: base.fetchedAt || 0 };
   }));
   return { configured: true, updated: Date.now(), teams };
 }
@@ -228,6 +230,35 @@ async function logo(url) {
   return new Response(r.body, {
     status: r.status,
     headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=604800' },
+  });
+}
+
+// ---------- Birthdays (searched from every event in the iCloud calendars) ----------
+
+const localDate = new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, year: 'numeric', month: 'numeric', day: 'numeric' });
+
+async function birthdays(env) {
+  if (!env.CALENDARS) return { configured: false };
+  const sources = JSON.parse(env.CALENDARS);
+  return cached('birthdays', 6 * 3600e3, async () => {
+    const found = [];
+    for (const src of sources) {
+      const r = await fetch(src.url.replace(/^webcal:/, 'https:'));
+      if (!r.ok) throw new Error(`calendar ${src.name}: ${r.status}`);
+      const comp = new ICAL.Component(ICAL.parse(await r.text()));
+      for (const ve of comp.getAllSubcomponents('vevent')) {
+        const ev = new ICAL.Event(ve);
+        if (ev.isRecurrenceException()) continue;
+        const s = ev.startDate;
+        let { year, month, day } = s;
+        if (!s.isDate) {
+          const parts = Object.fromEntries(localDate.formatToParts(s.toJSDate()).map((p) => [p.type, Number(p.value)]));
+          ({ year, month, day } = parts);
+        }
+        found.push({ title: ev.summary, year, month, day, recurring: ev.isRecurring() });
+      }
+    }
+    return { configured: true, updated: Date.now(), birthdays: findBirthdays(found) };
   });
 }
 
